@@ -57,7 +57,6 @@ def process_document(file_path):
     vectordb = Chroma.from_documents(
         documents=docs,
         embedding=embeddings,
-        persist_directory="./chroma_db"
     )
 
     return vectordb

@@ -1,10 +1,12 @@
-fastapi
-uvicorn
+streamlit
 langchain
 langchain-core
 langchain-community
-langchain-ollama
+langchain-openai
 langchain-chroma
 langchain-text-splitters
 chromadb
+openai
+tiktoken
+python-dotenv
 pypdf
