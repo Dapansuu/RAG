@@ -1,0 +1,5 @@
+.env
+rag_local.py
+test.pdf
+chroma_db/
+chorma_db_local/
