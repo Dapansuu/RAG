@@ -111,11 +111,30 @@ Question:
     # -----------------------------
     # Question Input
     # -----------------------------
-    query = st.text_input("Ask a question about the document:")
+# -----------------------------
+# Chat History (Session State)
+# -----------------------------
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    if query:
-        with st.spinner("Generating answer..."):
-            response = rag_chain.invoke(query)
+# Display previous messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-        st.subheader("Answer")
-        st.write(response)
+# Chat input box
+if prompt_input := st.chat_input("Ask something about the document..."):
+
+    # Add user message
+    st.session_state.messages.append({"role": "user", "content": prompt_input})
+    with st.chat_message("user"):
+        st.markdown(prompt_input)
+
+    # Generate response
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            response = rag_chain.invoke(prompt_input)
+            st.markdown(response)
+
+    # Save assistant response
+    st.session_state.messages.append({"role": "assistant", "content": response})
