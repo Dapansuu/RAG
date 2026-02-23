@@ -28,6 +28,21 @@ if not OPENROUTER_API_KEY:
 st.set_page_config(page_title="RAG Q&A", layout="wide")
 st.title("📚 RAG Q&A System")
 
+
+if st.button("🗑 Clear chat"):
+    try:
+        # Clear cached resources (clears vectordb)
+        st.cache_resource.clear()
+
+        # Clear session state messages
+        st.session_state.messages = []
+
+        st.success("Vector database and chat history cleared successfully!")
+        st.rerun()
+
+    except Exception as e:
+        st.error(f"Error clearing database: {e}")
+
 uploaded_file = st.file_uploader("Upload a PDF or TXT file", type=["pdf", "txt"])
 
 # -----------------------------
