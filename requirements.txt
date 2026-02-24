@@ -1,16 +1,20 @@
-streamlit==1.32.0
-langchain==0.1.20
-langchain-community==0.0.38
-langchain-core==0.1.52
-openai==1.30.1
-tiktoken==0.7.0
-faiss-cpu==1.8.0
-pypdf==4.2.0
-pandas==2.2.2
-beautifulsoup4==4.12.3
-requests==2.31.0
-sentence-transformers==2.7.0
-chromadb==0.5.0
-unstructured==0.14.3
-python-dotenv==1.0.1
-langchain-openai==0.1.7
+streamlit>=1.40.0
+
+# LangChain core and integrations
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-openai>=0.2.0
+langchain-text-splitters>=0.3.0
+
+# Vector store and embeddings
+faiss-cpu>=1.8.0
+sentence-transformers>=3.0.0
+
+# Document loaders and parsing
+pypdf>=4.0.0
+beautifulsoup4>=4.12.0
+requests>=2.32.0
+
+# Environment variables
+python-dotenv>=1.0.1
