@@ -143,26 +143,20 @@ def init_session_state() -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="RAG Chatbot (LangChain + OpenRouter)",
+        page_title="RAG Chatbot",
         page_icon="💬",
         layout="wide",
     )
 
     init_session_state()
 
-    st.title("RAG Chatbot powered by LangChain + OpenRouter")
+    st.title("RAG Chatbot with LangChain")
     st.markdown(
-        "Upload your documents or provide a website URL, then ask questions. "
-        "The chatbot will answer using only the retrieved context."
+        "Upload your documents or provide a website URL, then ask questions."
     )
 
     with st.sidebar:
         st.header("Configuration")
-        model_name = st.text_input(
-            "OpenRouter model",
-            value="openai/gpt-4.1-mini",
-            help="Enter any OpenRouter model slug, e.g. `openai/gpt-4.1-mini`.",
-        )
 
         st.markdown("### Data sources")
         uploaded_files = st.file_uploader(
@@ -175,6 +169,13 @@ def main() -> None:
             placeholder="https://example.com/article",
         )
 
+        if st.button("Clear chat & knowledge base"):
+            st.session_state["vectorstore"] = None
+            st.session_state["rag_model_name"] = None
+            st.session_state["chat_history"] = []
+            st.session_state["last_sources"] = []
+            st.success("Cleared chat history and knowledge base.")
+
         if st.button("Build knowledge base"):
             with st.spinner("Processing documents and building vector store..."):
                 docs = build_documents(uploaded_files or [], website_url.strip() or None)
@@ -184,7 +185,7 @@ def main() -> None:
                     st.error("No valid content found. Please upload files or provide a URL.")
                 else:
                     st.session_state["vectorstore"] = vectorstore
-                    st.session_state["rag_model_name"] = model_name
+                    st.session_state["rag_model_name"] = "openai/gpt-4.1-mini"
                     st.success(
                         f"Knowledge base built from {len(docs)} document chunks. You can now start chatting."
                     )
