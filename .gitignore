@@ -3,3 +3,4 @@ rag_local.py
 test.pdf
 chroma_db/
 chroma_db_local/
+test.py
