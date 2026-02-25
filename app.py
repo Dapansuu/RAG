@@ -1,5 +1,6 @@
 import os
-import json
+import shutil
+import sqlite3
 import tempfile
 from typing import List, Optional
 
@@ -17,14 +18,15 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
+from torch import embedding
 
 
 load_dotenv()
 
-CHAT_STORE_PATH = "chat_history.json"
+DB_PATH = "rag_chat.db"
 
 
-def get_llm(model_name: str) -> ChatOpenAI:
+def get_llm(model_name: str, *, temperature: float = 0.1, max_tokens: int = 512) -> ChatOpenAI:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         st.error(
@@ -45,24 +47,183 @@ def get_llm(model_name: str) -> ChatOpenAI:
             "HTTP-Referer": referer,
             "X-Title": title,
         },
-        temperature=0.1,
-        max_tokens=512,  # keep responses short to avoid credit/max_token issues
+        temperature=temperature,
+        max_tokens=max_tokens,  # keep responses short to avoid credit/max_token issues
     )
 
 
-def load_chat_store() -> dict:
-    if not os.path.exists(CHAT_STORE_PATH):
-        return {}
-    try:
-        with open(CHAT_STORE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+def get_db_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def save_chat_store(store: dict) -> None:
-    with open(CHAT_STORE_PATH, "w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=2)
+def init_db() -> None:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            vector_path TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_or_create_user(username: str) -> Optional[int]:
+    if not username:
+        return None
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO users (username) VALUES (?)", (username,))
+    conn.commit()
+    cur.execute("SELECT id FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["id"]) if row else None
+
+
+def list_conversations(user_id: int) -> List[sqlite3.Row]:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, title, created_at
+        FROM conversations
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        """,
+        (user_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def create_conversation(user_id: int, title: str) -> int:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO conversations (user_id, title) VALUES (?, ?)",
+        (user_id, title or "New chat"),
+    )
+    conn.commit()
+    conv_id = cur.lastrowid
+    conn.close()
+    return int(conv_id)
+
+
+def update_conversation_title(conversation_id: int, title: str) -> None:
+    if not title:
+        return
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE conversations SET title = ? WHERE id = ?",
+        (title, conversation_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def save_message(conversation_id: int, role: str, content: str) -> None:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+        (conversation_id, role, content),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_messages(conversation_id: int) -> List[dict]:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT role, content
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY created_at ASC, id ASC
+        """,
+        (conversation_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+
+def update_conversation_vector_path(conversation_id: int, vector_path: str) -> None:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE conversations SET vector_path = ? WHERE id = ?",
+        (vector_path, conversation_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_conversation_vector_path(conversation_id: int) -> Optional[str]:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT vector_path FROM conversations WHERE id = ?",
+        (conversation_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row and row["vector_path"]:
+        return str(row["vector_path"])
+    return None
+
+
+def delete_conversation(conversation_id: int) -> None:
+    """Delete a conversation, its messages, and any associated vector store directory."""
+    # First fetch vector path (if any)
+    vector_path = get_conversation_vector_path(conversation_id)
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+    cur.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    conn.commit()
+    conn.close()
+
+    # Remove saved vector store directory if it exists
+    if vector_path and os.path.isdir(vector_path):
+        try:
+            shutil.rmtree(vector_path)
+        except OSError:
+            pass
 
 
 def load_uploaded_file(uploaded_file) -> List[Document]:
@@ -115,15 +276,19 @@ def build_vectorstore(docs: List[Document]) -> Optional[FAISS]:
     if not docs:
         return None
 
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    if docs and docs[0].metadata.get("source", "").endswith(".csv"):
+        return FAISS.from_documents(docs, embeddings)
+
+    # Otherwise split (PDF, TXT, etc.)
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
     )
     split_docs = splitter.split_documents(docs)
-
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
 
     return FAISS.from_documents(split_docs, embeddings)
 
@@ -140,6 +305,44 @@ def format_chat_context(chat_history: List[dict], max_turns: int = 8) -> str:
         prefix = "User" if role == "user" else "Assistant"
         turns.append(f"{prefix}: {msg.get('content', '')}")
     return "\n".join(turns)
+
+
+def _fallback_title_from_text(text: str) -> str:
+    words = [w for w in (text or "").strip().split() if w]
+    if not words:
+        return "New chat"
+    return " ".join(words[:6])[:60].strip()
+
+
+def generate_conversation_title(model_name: str, chat_history: List[dict]) -> str:
+    # Prefer the first user message as the topic seed.
+    first_user = next((m.get("content", "") for m in chat_history if m.get("role") == "user"), "")
+    seed = (first_user or "").strip()
+    if not seed:
+        return "New chat"
+
+    llm = get_llm(model_name, temperature=0.2, max_tokens=24)
+    prompt = (
+        "Create a short ChatGPT-style conversation title (3-6 words) based on the user's questions.\n"
+        "Rules:\n"
+        "- Return ONLY the title.\n"
+        "- No quotes.\n"
+        "- No trailing period.\n\n"
+        f"User topic:\n{seed}\n\n"
+        "Title:"
+    )
+    try:
+        resp = llm.invoke(prompt)
+        title = getattr(resp, "content", str(resp)).strip()
+    except Exception:
+        title = ""
+
+    title = (title or "").strip().strip('"').strip("'")
+    title = title.splitlines()[0].strip() if title else ""
+    if title.endswith("."):
+        title = title[:-1].strip()
+    title = title[:80].strip()
+    return title or _fallback_title_from_text(seed)
 
 
 def rewrite_query_with_history(
@@ -178,13 +381,11 @@ def run_rag_query(
     chat_history: Optional[List[dict]] = None,
 ) -> tuple[str, List[Document]]:
     llm = get_llm(model_name)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 20})
 
-    # Use a rewritten standalone query for retrieval so follow-ups work better.
-    effective_query = rewrite_query_with_history(llm, query, chat_history)
-
-    # In recent LangChain versions, retrievers are Runnables; use invoke() instead of get_relevant_documents()
-    source_docs = retriever.invoke(effective_query)
+    history_text = format_chat_context(chat_history, max_turns=6)
+    effective_query = f"{history_text}\n\nCurrent question: {query}"
+    source_docs = retriever.invoke(effective_query) 
 
     context = "\n\n".join(doc.page_content for doc in source_docs)
     history_text = format_chat_context(chat_history or [])
@@ -216,7 +417,11 @@ def init_session_state() -> None:
     if "last_sources" not in st.session_state:
         st.session_state["last_sources"] = []
     if "user_id" not in st.session_state:
-        st.session_state["user_id"] = ""
+        st.session_state["user_id"] = None
+    if "username" not in st.session_state:
+        st.session_state["username"] = ""
+    if "conversation_id" not in st.session_state:
+        st.session_state["conversation_id"] = None
     if "conversation_title" not in st.session_state:
         st.session_state["conversation_title"] = ""
 
@@ -228,6 +433,7 @@ def main() -> None:
         layout="wide",
     )
 
+    init_db()
     init_session_state()
 
     st.title("RAG Chatbot with LangChain")
@@ -236,76 +442,129 @@ def main() -> None:
     )
 
     with st.sidebar:
-        st.header("User & conversations")
-        user_id = st.text_input(
-            "User ID",
-            value=st.session_state.get("user_id", ""),
-            help="Used to save and load your chats separately from other users.",
+        st.header("Account")
+        username = st.text_input(
+            "Username",
+            value=st.session_state.get("username", ""),
+            help="Used to separate and load your chats, similar to ChatGPT.",
         ).strip()
+        st.session_state["username"] = username
+
+        user_id = get_or_create_user(username) if username else None
         st.session_state["user_id"] = user_id
 
-        store = load_chat_store()
-        user_chats = sorted(store.get(user_id, {}).keys()) if user_id else []
-        selected_chat = st.selectbox(
-            "Load saved chat",
-            ["<New chat>"] + user_chats,
-            index=0,
-        )
+        if not user_id:
+            st.info("Enter a username to start or load chats.")
+        else:
+            st.markdown("### Your chats")
+            conv_rows = list_conversations(user_id)
+            # Use an ID-suffixed label to avoid collisions when titles repeat.
+            conv_options = {f"{row['title']} · {row['id']}": row for row in conv_rows}
+            selected_label = st.selectbox(
+                "Select a chat",
+                ["New chat"] + list(conv_options.keys()),
+                index=0,
+            )
 
-        if user_id and selected_chat != "<New chat>" and st.button("Load selected chat"):
-            convo = store[user_id][selected_chat]
-            st.session_state["conversation_title"] = selected_chat
-            st.session_state["chat_history"] = convo.get("messages", [])
-            st.success(f"Loaded chat: {selected_chat}")
+            if selected_label == "+ New chat":
+                if st.button("Start new chat"):
+                    st.session_state["conversation_id"] = None
+                    st.session_state["conversation_title"] = ""
+                    st.session_state["chat_history"] = []
+                    st.session_state["vectorstore"] = None
+                    st.session_state["last_sources"] = []
+                    st.success("Started a new chat. Build a knowledge base to begin.")
+            else:
+                selected_row = conv_options.get(selected_label)
+                load_col, delete_col = st.columns(2)
+                if selected_row is not None and load_col.button("Load selected chat"):
+                    conv_id = int(selected_row["id"])
+                    st.session_state["conversation_id"] = conv_id
+                    st.session_state["conversation_title"] = selected_row["title"]
+                    st.session_state["chat_history"] = load_messages(conv_id)
 
-        conv_title = st.text_input(
-            "Conversation title",
-            value=st.session_state.get("conversation_title", ""),
-            help="Name for this chat when saving.",
-        )
-        st.session_state["conversation_title"] = conv_title
+                    # Reload vector store for this conversation if available
+                    vector_path = get_conversation_vector_path(conv_id)
+                    if vector_path and os.path.isdir(vector_path):
+                        try:
+                            embeddings = HuggingFaceEmbeddings(
+                                model_name="sentence-transformers/all-MiniLM-L6-v2"
+                            )
+                            vs = FAISS.load_local(
+                                vector_path,
+                                embeddings,
+                                allow_dangerous_deserialization=True,
+                            )
+                            st.session_state["vectorstore"] = vs
+                        except Exception:
+                            st.session_state["vectorstore"] = None
+                    else:
+                        st.session_state["vectorstore"] = None
 
-        if user_id and conv_title and st.button("Save current chat"):
-            store = load_chat_store()
-            store.setdefault(user_id, {})
-            store[user_id][conv_title] = {
-                "messages": st.session_state.get("chat_history", []),
-            }
-            save_chat_store(store)
-            st.success("Chat saved.")
+                    st.success(f"Loaded chat: {selected_row['title']}")
 
-        st.markdown("---")
-        st.header("Configuration")
+                if selected_row is not None and delete_col.button("Delete selected chat"):
+                    conv_id = int(selected_row["id"])
+                    delete_conversation(conv_id)
 
-        st.markdown("### Data sources")
-        uploaded_files = st.file_uploader(
-            "Upload documents",
-            type=["pdf", "txt", "md", "csv"],
-            accept_multiple_files=True,
-        )
-        website_url = st.text_input(
-            "Website URL (optional)",
-            placeholder="https://example.com/article",
-        )
-        if st.button("Build knowledge base"):
-            with st.spinner("Processing documents and building vector store..."):
-                docs = build_documents(uploaded_files or [], website_url.strip() or None)
-                vectorstore = build_vectorstore(docs)
+                    # If this was the active chat, clear current state
+                    if st.session_state.get("conversation_id") == conv_id:
+                        st.session_state["conversation_id"] = None
+                        st.session_state["conversation_title"] = ""
+                        st.session_state["chat_history"] = []
+                        st.session_state["vectorstore"] = None
+                        st.session_state["last_sources"] = []
 
-                if vectorstore is None:
-                    st.error("No valid content found. Please upload files or provide a URL.")
-                else:
-                    st.session_state["vectorstore"] = vectorstore
-                    # keep current model name in session; default is set in init_session_state
-                    st.success(
-                        f"Knowledge base built from {len(docs)} document chunks. You can now start chatting."
-                    )
-        if st.button("Clear chat & knowledge base"):
-            st.session_state["vectorstore"] = None
-            st.session_state["rag_model_name"] = None
-            st.session_state["chat_history"] = []
-            st.session_state["last_sources"] = []
-            st.success("Cleared chat history and knowledge base.")
+                    st.success(f"Deleted chat: {selected_row['title']}")
+                    st.rerun()
+
+            st.markdown("---")
+            st.header("Knowledge base")
+
+            st.markdown("### Data sources")
+            uploaded_files = st.file_uploader(
+                "Upload documents",
+                type=["pdf", "txt", "md", "csv"],
+                accept_multiple_files=True,
+            )
+            website_url = st.text_input(
+                "Website URL (optional)",
+                placeholder="https://example.com/article",
+            )
+            if st.button("Build / update knowledge base"):
+                with st.spinner("Processing documents and building vector store..."):
+                    docs = build_documents(uploaded_files or [], website_url.strip() or None)
+                    vectorstore = build_vectorstore(docs)
+
+                    if vectorstore is None:
+                        st.error("No valid content found. Please upload files or provide a URL.")
+                    else:
+                        # Ensure we have a conversation row to associate this KB with
+                        if st.session_state["conversation_id"] is None:
+                            title = st.session_state.get("conversation_title") or "New chat"
+                            conv_id = create_conversation(user_id, title)
+                            st.session_state["conversation_id"] = conv_id
+                        conv_id = st.session_state["conversation_id"]
+
+                        # Save vector store locally per conversation
+                        vector_dir = os.path.join("vectorstores", f"user_{user_id}_conv_{conv_id}")
+                        os.makedirs(vector_dir, exist_ok=True)
+                        vectorstore.save_local(vector_dir)
+                        update_conversation_vector_path(conv_id, vector_dir)
+
+                        st.session_state["vectorstore"] = vectorstore
+                        st.success(
+                            f"Knowledge base built from {len(docs)} document chunks. You can now start chatting."
+                        )
+
+            if st.button("Clear chat & knowledge base"):
+                st.session_state["vectorstore"] = None
+                st.session_state["chat_history"] = []
+                st.session_state["last_sources"] = []
+                st.session_state["conversation_id"] = None
+                st.session_state["conversation_title"] = ""
+                st.session_state["uploaded_files"] = None
+                st.success("Cleared current chat state. Select or start a chat to continue.")
 
 
 
@@ -326,9 +585,20 @@ def main() -> None:
         # Always render the input so it stays at the bottom like ChatGPT.
         user_input = st.chat_input("Ask a question about your data...")
         if user_input:
+            # Ensure there is a conversation row for this user
+            if st.session_state["user_id"] and st.session_state["conversation_id"] is None:
+                title = st.session_state.get("conversation_title") or "New chat"
+                conv_id = create_conversation(st.session_state["user_id"], title)
+                st.session_state["conversation_id"] = conv_id
+
+            conv_id = st.session_state.get("conversation_id")
+
             st.session_state["chat_history"].append(
                 {"role": "user", "content": user_input}
             )
+            if conv_id:
+                save_message(conv_id, "user", user_input)
+
             with st.chat_message("user"):
                 st.markdown(user_input)
 
@@ -339,6 +609,8 @@ def main() -> None:
                 st.session_state["chat_history"].append(
                     {"role": "assistant", "content": msg}
                 )
+                if conv_id:
+                    save_message(conv_id, "assistant", msg)
             else:
                 with st.chat_message("assistant"):
                     with st.spinner("Thinking..."):
@@ -354,6 +626,16 @@ def main() -> None:
                         st.session_state["chat_history"].append(
                             {"role": "assistant", "content": answer}
                         )
+                        if conv_id:
+                            save_message(conv_id, "assistant", answer)
+
+                        # Auto-generate a ChatGPT-like title once, for new/default chats.
+                        current_title = (st.session_state.get("conversation_title") or "").strip()
+                        if conv_id and (not current_title or current_title.lower() == "new chat"):
+                            new_title = generate_conversation_title(model_name, st.session_state["chat_history"])
+                            update_conversation_title(conv_id, new_title)
+                            st.session_state["conversation_title"] = new_title
+                            st.rerun()
 
                 # Store sources for display in the right column
                 st.session_state["last_sources"] = sources
