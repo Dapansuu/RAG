@@ -1,0 +1,54 @@
+{
+  "dapansuu": {
+    "offer letter": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "name of the intern"
+        },
+        {
+          "role": "assistant",
+          "content": "The name of the intern is Rohan Kumar Singh."
+        },
+        {
+          "role": "user",
+          "content": "name of the company"
+        },
+        {
+          "role": "assistant",
+          "content": "The name of the company is Onlygood Futuretech (India) Pvt Ltd."
+        },
+        {
+          "role": "user",
+          "content": "position of the intern"
+        },
+        {
+          "role": "assistant",
+          "content": "The position of the intern is Tech Analyst - Intern."
+        }
+      ]
+    }
+  },
+  "blud": {
+    "DAA": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "what is sorting"
+        },
+        {
+          "role": "assistant",
+          "content": "Sorting is the process of arranging the elements of a list or array in a certain order, which can be numerical order, lexicographical order, or any user-defined order. It involves placing the elements so that they follow a relevant sequence, such as ascending order (e.g., A[0] < A[1] < A[2] < ... < A[N]) or descending order. Sorting is used to optimize other algorithms like search and merge algorithms that require sorted lists to function correctly."
+        },
+        {
+          "role": "user",
+          "content": "types of sorting"
+        },
+        {
+          "role": "assistant",
+          "content": "The types of sorting mentioned are:\n\n1. Internal sorting: Deals with sorting the data stored in the computer’s memory.\n2. External sorting: Deals with sorting the data stored in files, applied when there is voluminous data that cannot be stored in the computer’s memory."
+        }
+      ]
+    }
+  }
+}
