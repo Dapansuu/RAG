@@ -269,13 +269,14 @@ def build_documents(
 
     return docs
 
-
+@st.cache_resource
 def build_vectorstore(docs: List[Document]) -> Optional[FAISS]:
     if not docs:
         return None
 
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+        model_name="sentence-transformers/paraphrase-MiniLM-L3-v2",
+        encode_kwargs={"batch_size":64}
     )
 
     if docs and docs[0].metadata.get("source", "").endswith(".csv"):
