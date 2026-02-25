@@ -128,18 +128,47 @@ def build_vectorstore(docs: List[Document]) -> Optional[FAISS]:
     return FAISS.from_documents(split_docs, embeddings)
 
 
-def format_chat_context(chat_history: List[dict], max_turns: int = 6) -> str:
+def format_chat_context(chat_history: List[dict], max_turns: int = 8) -> str:
     """Return a short textual representation of recent conversation turns."""
     if not chat_history:
         return ""
 
     turns = []
-    # Take last max_turns messages
+    # Take last max_turns messages (user + assistant)
     for msg in chat_history[-max_turns:]:
         role = msg.get("role", "user")
         prefix = "User" if role == "user" else "Assistant"
         turns.append(f"{prefix}: {msg.get('content', '')}")
     return "\n".join(turns)
+
+
+def rewrite_query_with_history(
+    llm: ChatOpenAI, query: str, chat_history: Optional[List[dict]]
+) -> str:
+    """Use the LLM to turn a follow-up question into a standalone query."""
+    if not chat_history:
+        return query
+
+    history_text = format_chat_context(chat_history, max_turns=8)
+    if not history_text:
+        return query
+
+    rewrite_prompt = (
+        "You are helping a retrieval system understand conversational questions.\n"
+        "Given the conversation so far and the user's latest question, rewrite the "
+        "question so it can be understood without the conversation.\n"
+        "Do not answer the question, only rewrite it.\n\n"
+        f"Conversation so far:\n{history_text}\n\n"
+        f"Latest user question: {query}\n\n"
+        "Standalone rewritten question:"
+    )
+    try:
+        resp = llm.invoke(rewrite_prompt)
+        rewritten = getattr(resp, "content", str(resp)).strip()
+        return rewritten or query
+    except Exception:
+        # If anything goes wrong, fall back to the original query
+        return query
 
 
 def run_rag_query(
@@ -149,22 +178,28 @@ def run_rag_query(
     chat_history: Optional[List[dict]] = None,
 ) -> tuple[str, List[Document]]:
     llm = get_llm(model_name)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+
+    # Use a rewritten standalone query for retrieval so follow-ups work better.
+    effective_query = rewrite_query_with_history(llm, query, chat_history)
+
     # In recent LangChain versions, retrievers are Runnables; use invoke() instead of get_relevant_documents()
-    source_docs = retriever.invoke(query)
+    source_docs = retriever.invoke(effective_query)
 
     context = "\n\n".join(doc.page_content for doc in source_docs)
     history_text = format_chat_context(chat_history or [])
     prompt_parts = [
         "You are a helpful assistant for a Retrieval-Augmented Generation (RAG) chatbot.",
-        "Use ONLY the information from the document provided to answer the user's question.",
+        "Use the information from the document provided to answer the user's question.",
         "If the answer is not contained in the context, say that you don't know.",
         "If the question is a follow-up, use the conversation history to resolve references like 'it', 'they', 'that', etc.",
     ]
     prompt = "\n".join(prompt_parts) + "\n\n"
     if history_text:
         prompt += f"Conversation so far:\n{history_text}\n\n"
-    prompt += f"Retrieved context:\n{context}\n\nQuestion: {query}"
+    if effective_query != query:
+        prompt += f"Standalone interpretation of the question: {effective_query}\n\n"
+    prompt += f"Retrieved context:\n{context}\n\nOriginal user question: {query}"
 
     response = llm.invoke(prompt)
     answer = getattr(response, "content", str(response))
