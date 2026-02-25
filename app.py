@@ -3,9 +3,9 @@ import shutil
 import sqlite3
 import tempfile
 from typing import List, Optional
-
-import streamlit as st
 from dotenv import load_dotenv
+import streamlit as st
+
 
 from langchain_community.document_loaders import (
     PyPDFLoader,
@@ -20,14 +20,12 @@ from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 from torch import embedding
 
+DB_PATH = "rag_chat.db"
 
 load_dotenv()
 
-DB_PATH = "rag_chat.db"
-
-
 def get_llm(model_name: str, *, temperature: float = 0.1, max_tokens: int = 512) -> ChatOpenAI:
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    api_key = st.secrets["OPENROUTER_API_KEY"] or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         st.error(
             "Missing `OPENROUTER_API_KEY` environment variable. "
